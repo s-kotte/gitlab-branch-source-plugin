@@ -230,6 +230,36 @@ public class GitLabPipelineStatusNotifier {
     }
 
     /**
+     * Sends commit status to GitLab
+     */
+    private static void sendCommitStatus(Run<?, ?> build, TaskListener listener,
+        GitLabSCMSource source, SCMRevision revision, String hash, CommitStatus status,
+        Constants.CommitBuildState state) throws GitLabApiException {
+        GitLabApi gitLabApi = GitLabHelper.apiBuilder(source.getServerName());
+        LOGGER.log(Level.FINE, String.format("Notifiying commit: %s", hash));
+
+        if (revision instanceof MergeRequestSCMRevision) {
+            Integer projectId = getSourceProjectId(build.getParent(), gitLabApi,
+                source.getProjectPath());
+            status.setRef(
+                ((MergeRequestSCMRevision) revision).getOrigin().getHead().getName());
+            gitLabApi.getCommitsApi().addCommitStatus(
+                projectId,
+                hash,
+                state,
+                status);
+        } else {
+            gitLabApi.getCommitsApi().addCommitStatus(
+                source.getProjectPath(),
+                hash,
+                state,
+                status);
+        }
+
+        listener.getLogger().format("[GitLab Pipeline Status] Notified%n");
+    }
+
+    /**
      * Sends notifications to GitLab on Checkout (for the "In Progress" Status).
      */
     private static void sendNotifications(Run<?, ?> build, TaskListener listener) {
@@ -311,32 +341,20 @@ public class GitLabPipelineStatusNotifier {
                 jsl.resolving.remove(build.getParent());
             }
         }
-        try {
-            GitLabApi gitLabApi = GitLabHelper.apiBuilder(source.getServerName());
-            LOGGER.log(Level.FINE, String.format("Notifiying commit: %s", hash));
-
-            if (revision instanceof MergeRequestSCMRevision) {
-                Integer projectId = getSourceProjectId(build.getParent(), gitLabApi, source.getProjectPath());
-                status.setRef(((MergeRequestSCMRevision) revision).getOrigin().getHead().getName());
-                gitLabApi.getCommitsApi().addCommitStatus(
-                    projectId,
-                    hash,
-                    state,
-                    status);
-            } else {
-                gitLabApi.getCommitsApi().addCommitStatus(
-                    source.getProjectPath(),
-                    hash,
-                    state,
-                    status);
-            }
-
-            listener.getLogger().format("[GitLab Pipeline Status] Notified%n");
-        } catch (GitLabApiException e) {
-            if(!e.getMessage().contains(("Cannot transition status"))) {
-                LOGGER.log(Level.WARNING, String.format("Exception caught: %s",e.getMessage()));
+        int attempts = 0;
+        while (attempts < 5) {
+            try {
+                sendCommitStatus(build, listener, source, revision, hash, status, state);
+                break;
+            } catch (GitLabApiException e) {
+                if (!e.getMessage().contains(("Cannot transition status"))) {
+                    LOGGER.log(Level.WARNING,
+                        String.format("Exception caught: %s", e.getMessage()));
+                }
+                attempts++;
             }
         }
+
     }
 
     @Extension
